@@ -1,0 +1,6 @@
+{
+  "name": "Atmosphere",
+  "description": "Context-aware 4x2 Widget",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
