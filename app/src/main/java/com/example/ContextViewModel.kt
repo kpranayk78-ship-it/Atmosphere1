@@ -24,9 +24,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.Calendar
-import com.google.android.gms.location.ActivityRecognition
-import com.google.android.gms.location.ActivityRecognitionResult
-import com.google.android.gms.location.DetectedActivity
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 
@@ -43,21 +40,28 @@ data class AtmosphereContext(
     val timeHour: Int = 12,
     val ambientNoiseLevel: Double = 0.0,
     val sustainedLoudNoise: Boolean = false,
-    val detectedActivity: Int = DetectedActivity.UNKNOWN,
+    val detectedActivity: Int = 4, // 4 is UNKNOWN
     val isInternetCafe: Boolean = false,
-    val isHeadphonesConnected: Boolean = false
+    val isHeadphonesConnected: Boolean = false,
+    val isWeekend: Boolean = false
 )
 
 fun evaluateState(ctx: AtmosphereContext): WidgetState {
     if (ctx.isOffline || ctx.battery < 15) return WidgetState.GHOST
+    
+    // Deep Focus: Focus event (calendar) + high ambient noise (e.g. busy cafe)
+    if (ctx.hasFocusEvent && ctx.ambientNoiseLevel >= 65.0) return WidgetState.DEEP_FOCUS
+
     if (ctx.address.contains("Party", true) || ctx.isSocialMode || ctx.sustainedLoudNoise) return WidgetState.CROWD
     
     // Gym + Headphones -> BEAST, Gym without Headphones -> DISCOVERY (handled by fallback if no other matched)
-    if ((ctx.address.contains("Gym", true) && ctx.isHeadphonesConnected) || ctx.detectedActivity == DetectedActivity.RUNNING || ctx.detectedActivity == DetectedActivity.ON_BICYCLE) return WidgetState.BEAST
+    if ((ctx.address.contains("Gym", true) && ctx.isHeadphonesConnected) || ctx.detectedActivity == 8 /* RUNNING */ || ctx.detectedActivity == 1 /* ON_BICYCLE */) return WidgetState.BEAST
     
-    if ((ctx.timeHour >= 18 && (ctx.battery < 50 || (ctx.ambientNoiseLevel > 0.0 && ctx.ambientNoiseLevel <= 50.0))) || (ctx.address.contains("Home", true) && ctx.timeHour >= 18)) return WidgetState.REWIND
+    if ((ctx.timeHour >= 23 || ctx.timeHour < 5) && ctx.isHeadphonesConnected) return WidgetState.BEDTIME
+
+    if ((ctx.timeHour >= 18 && (ctx.battery < 50 || (ctx.ambientNoiseLevel > 0.0 && ctx.ambientNoiseLevel <= 50.0))) || (ctx.address.contains("Home", true) && (ctx.timeHour >= 18 || ctx.isWeekend))) return WidgetState.REWIND
     if (ctx.hasFocusEvent || ctx.isInternetCafe || (ctx.ambientNoiseLevel > 0.0 && ctx.ambientNoiseLevel <= 50.0)) return WidgetState.FOCUS
-    if (ctx.weather == "Rain" || ctx.weather == "Storm" || ctx.weather == "Snow") return WidgetState.COZY
+    if (ctx.weather == "Rain" || ctx.weather == "Storm" || ctx.weather == "Snow" || ctx.weather == "Drizzle" || ctx.weather == "Fog" || ctx.weather == "Cloudy" || ctx.timeHour < 6) return WidgetState.COZY
     return WidgetState.DISCOVERY
 }
 
@@ -74,44 +78,51 @@ class ContextViewModel(application: Application) : AndroidViewModel(application)
     private var overrideEndTime: Long = 0
 
     private val noiseHistory = mutableListOf<Double>()
-    private var currentActivityType = DetectedActivity.UNKNOWN
-    
-    // Register receiver for activity updates
-    private val activityReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (ActivityRecognitionResult.hasResult(intent)) {
-                val result = ActivityRecognitionResult.extractResult(intent)
-                result?.let {
-                    currentActivityType = it.mostProbableActivity.type
-                }
+    private var currentActivityType = 4 // 4 is UNKNOWN
+
+    private val syncMutex = kotlinx.coroutines.sync.Mutex()
+
+    private var sensorManager: android.hardware.SensorManager? = null
+    private var stepDetector: android.hardware.Sensor? = null
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                syncContext()
+                val currentBattery = _atmosphereContext.value.battery
+                val pollDelay = if (currentBattery < 15) 60_000L else 10_000L
+                delay(pollDelay)
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            com.example.ActivityGlobalState.detectedActivity.collect {
+                syncContext()
             }
         }
     }
 
-    init {
-        // Register Activity Recognition
-        ContextCompat.registerReceiver(
-            ctx,
-            activityReceiver,
-            IntentFilter("ACTION_PROCESS_ACTIVITY_TRANSITIONS"),
-            ContextCompat.RECEIVER_EXPORTED
-        )
-
+    @SuppressLint("MissingPermission")
+    fun onPermissionsGranted() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q && 
+            androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.ACTIVITY_RECOGNITION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        
         try {
-            val pendingIntent = PendingIntent.getBroadcast(
-                ctx, 0, Intent("ACTION_PROCESS_ACTIVITY_TRANSITIONS").apply {
-                    setPackage(ctx.packageName)
-                }, 
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-            )
-            ActivityRecognition.getClient(ctx).requestActivityUpdates(10000, pendingIntent)
-        } catch (e: Exception) {}
-
-        viewModelScope.launch(Dispatchers.IO) {
-            while (true) {
-                syncContext()
-                delay(10_000)
+            sensorManager = ctx.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
+            stepDetector = sensorManager?.getDefaultSensor(android.hardware.Sensor.TYPE_STEP_DETECTOR)
+            stepDetector?.let {
+                sensorManager?.registerListener(object : android.hardware.SensorEventListener {
+                    override fun onSensorChanged(event: android.hardware.SensorEvent?) {
+                        if (event?.values?.get(0) == 1.0f) { // A step was detected
+                            com.example.ActivityGlobalState.detectedActivity.value = 7 // WALKING
+                        }
+                    }
+                    override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) {}
+                }, it, android.hardware.SensorManager.SENSOR_DELAY_FASTEST)
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -143,31 +154,68 @@ class ContextViewModel(application: Application) : AndroidViewModel(application)
         _isManualOverride.value = true
         overrideEndTime = System.currentTimeMillis() + 1000 * 60 * 60 // 1 hour duration
     }
+    
+    fun onAppReopened() {
+        lastLocationSyncTime = 0L
+        cachedLat = 0.0
+        cachedLon = 0.0
+        cachedSpeed = 0f
+        cachedAddress = "Unknown"
+        cachedWeather = "Clear"
+        cachedActivityType = 4
+        noiseHistory.clear()
+        _isManualOverride.value = false
+        // Reset state so it's "like new" while we calculate
+        _currentState.value = WidgetState.DISCOVERY
+        
+        viewModelScope.launch(Dispatchers.IO) {
+            syncContext()
+        }
+    }
+
+    private var lastLocationSyncTime = 0L
+    private var cachedLat = 0.0
+    private var cachedLon = 0.0
+    private var cachedSpeed = 0f
+    private var cachedAddress = "Unknown"
+    private var cachedWeather = "Clear"
+    private var cachedActivityType = 4
 
     private suspend fun syncContext() {
+        if (!syncMutex.tryLock()) return
         try {
             val battery = getBatteryPercentage()
             val isOffline = isNetworkOffline()
             val networkName = getNetworkTypeString()
             val hasFocus = hasUpcomingEvent()
             
-            var lat = 0.0
-            var lon = 0.0
-            var speedMph = 0f
-            var addressName = "Unknown"
-
-            if (hasLocationPermission()) {
-                val location = getLocation()
-                if (location != null) {
-                    lat = location.latitude
-                    lon = location.longitude
-                    speedMph = location.speed * 2.23694f
-                    addressName = getAddressName(lat, lon)
+            val nowMs = System.currentTimeMillis()
+            if (nowMs - lastLocationSyncTime > 5 * 60 * 1000) { // Sync location & weather every 5 mins
+                if (hasLocationPermission()) {
+                    val location = getLocation()
+                    if (location != null) {
+                        cachedLat = location.latitude
+                        cachedLon = location.longitude
+                        cachedSpeed = location.speed * 2.23694f
+                        cachedAddress = getAddressName(cachedLat, cachedLon)
+                        cachedWeather = getWeather(cachedLat, cachedLon)
+                    }
                 }
+                lastLocationSyncTime = nowMs
             }
-
-            val weather = if (lat != 0.0 && lon != 0.0) getWeather(lat, lon) else "Clear"
+            
+            cachedActivityType = com.example.ActivityGlobalState.detectedActivity.value
+            if (cachedActivityType == 4 || cachedActivityType == 3) {
+                if (cachedSpeed >= 20.0) cachedActivityType = 0
+                else if (cachedSpeed >= 12.0) cachedActivityType = 1
+                else if (cachedSpeed >= 5.0) cachedActivityType = 8
+                else if (cachedSpeed >= 1.5) cachedActivityType = 2
+            }
+            
+            val weather = cachedWeather
             val timeHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+            val dayOfWeek = Calendar.getInstance().get(Calendar.DAY_OF_WEEK)
+            val isWeekend = dayOfWeek == Calendar.SATURDAY || dayOfWeek == Calendar.SUNDAY
             val ambientNoiseLevel = getAmbientNoiseLevel()
             
             noiseHistory.add(ambientNoiseLevel)
@@ -185,16 +233,17 @@ class ContextViewModel(application: Application) : AndroidViewModel(application)
                 isOffline = isOffline,
                 networkName = if (actualNetworkSsid != "UNKNOWN") actualNetworkSsid else networkName,
                 hasFocusEvent = hasFocus,
-                speedMph = speedMph,
-                address = addressName,
+                speedMph = cachedSpeed,
+                address = cachedAddress,
                 weather = weather,
-                latPattern = if (lat != 0.0) String.format("LAT: %.4f° N", lat) else "LAT: --",
+                latPattern = if (cachedLat != 0.0) String.format("LAT: %.4f° N", cachedLat) else "LAT: --",
                 timeHour = timeHour,
                 ambientNoiseLevel = ambientNoiseLevel,
                 sustainedLoudNoise = sustainedLoudNoise,
-                detectedActivity = currentActivityType,
+                detectedActivity = cachedActivityType,
                 isInternetCafe = isCafe,
-                isHeadphonesConnected = isHeadphonesConnected
+                isHeadphonesConnected = isHeadphonesConnected,
+                isWeekend = isWeekend
             )
             _atmosphereContext.value = newCtx
             
@@ -206,52 +255,68 @@ class ContextViewModel(application: Application) : AndroidViewModel(application)
             if (!_isManualOverride.value || evaluated == WidgetState.GHOST) {
                 _currentState.value = evaluated
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             // Ignored to prevent crashes in the background loop
+        } finally {
+            syncMutex.unlock()
         }
     }
 
+    @SuppressLint("MissingPermission")
     private suspend fun getAmbientNoiseLevel(): Double {
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             return 0.0
         }
-        var recorder: android.media.MediaRecorder? = null
-        var tempFile: java.io.File? = null
         return try {
-            tempFile = java.io.File.createTempFile("noise", ".3gp", ctx.cacheDir)
-            recorder = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                android.media.MediaRecorder(ctx)
-            } else {
-                @Suppress("DEPRECATION")
-                android.media.MediaRecorder()
-            }
-            recorder.apply {
-                setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
-                setOutputFormat(android.media.MediaRecorder.OutputFormat.THREE_GPP)
-                setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AMR_NB)
-                setOutputFile(tempFile.absolutePath)
-                prepare()
-                start()
-            }
-            recorder.maxAmplitude // First call returns 0, resets baseline
-            delay(1500) // Sample for 1.5 seconds
-            val amplitude = recorder.maxAmplitude
-            recorder.stop()
-            recorder.release()
-            tempFile.delete()
+            val sampleRate = 8000
+            val channelConfig = android.media.AudioFormat.CHANNEL_IN_MONO
+            val audioFormat = android.media.AudioFormat.ENCODING_PCM_16BIT
+            val minBufSize = android.media.AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
             
-            if (amplitude > 0) {
-                20 * kotlin.math.log10(amplitude.toDouble())
+            val audioRecord = android.media.AudioRecord(
+                android.media.MediaRecorder.AudioSource.MIC,
+                sampleRate,
+                channelConfig,
+                audioFormat,
+                minBufSize
+            )
+
+            if (audioRecord.state != android.media.AudioRecord.STATE_INITIALIZED) {
+                audioRecord.release()
+                return 0.0
+            }
+
+            var maxAmplitude = 0
+            try {
+                audioRecord.startRecording()
+                val buffer = ShortArray(minBufSize)
+                
+                val endTime = System.currentTimeMillis() + 1000 // 1 second
+                while (System.currentTimeMillis() < endTime) {
+                    val readSize = audioRecord.read(buffer, 0, minBufSize)
+                    if (readSize > 0) {
+                        for (i in 0 until readSize) {
+                            val amplitude = kotlin.math.abs(buffer[i].toInt())
+                            if (amplitude > maxAmplitude) {
+                                maxAmplitude = amplitude
+                            }
+                        }
+                    }
+                    delay(50)
+                }
+            } finally {
+                try {
+                    audioRecord.stop()
+                } catch (e: Exception) {}
+                audioRecord.release()
+            }
+            
+            if (maxAmplitude > 0) {
+                20 * kotlin.math.log10(maxAmplitude.toDouble())
             } else {
                 0.0
             }
-        } catch (e: Exception) {
-            try {
-                recorder?.release()
-                tempFile?.delete()
-            } catch (ex: Exception) {
-                // ignore
-            }
+        } catch (e: Throwable) {
             0.0
         }
     }
@@ -392,5 +457,9 @@ class ContextViewModel(application: Application) : AndroidViewModel(application)
         } finally {
             connection?.disconnect()
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
     }
 }

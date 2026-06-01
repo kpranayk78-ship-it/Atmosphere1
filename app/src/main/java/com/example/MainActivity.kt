@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -32,6 +33,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.NdDot
@@ -56,6 +60,11 @@ enum class WidgetState(
         "Deep Work / DND",
         "spotify:playlist:37i9dQZF1DWZeKCadgRdKQ", PixelIcons.StopSign
     ),
+    DEEP_FOCUS(
+        "DEEP", "FOCUS",
+        "Pair headphones. DND on.",
+        "spotify:playlist:37i9dQZF1DWZeKCadgRdKQ", PixelIcons.StopSign // Can be something else, but PixelIcon.StopSign works
+    ),
     BEAST(
         "BEAST", "MODE",
         "High BPM / Phonk",
@@ -75,6 +84,11 @@ enum class WidgetState(
         "CROWD", "CONTROL",
         "Global Top 50",
         "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", PixelIcons.Speaker
+    ),
+    BEDTIME(
+        "BEDTIME", "MODE",
+        "Sleep Sounds",
+        "spotify:playlist:37i9dQZF1DWZd79rJ6a7cD", PixelIcons.Moon
     ),
     DISCOVERY(
         "DAILY", "DISCOVERY",
@@ -144,7 +158,22 @@ fun AtmosphereWidgetApp(modifier: Modifier = Modifier, viewModel: ContextViewMod
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { }
+    ) { 
+        viewModel.onPermissionsGranted()
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.onAppReopened()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     LaunchedEffect(Unit) {
         val perms = mutableListOf(
@@ -211,7 +240,7 @@ fun AtmosphereWidgetApp(modifier: Modifier = Modifier, viewModel: ContextViewMod
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                PixelIcon(currentState.pixels, modifier = Modifier.size(80.dp).alpha(0.9f))
+                PixelIcon(currentState.pixels, modifier = Modifier.size(80.dp).alpha(0.9f), monochrome = ctxState.battery < 15)
                 Spacer(Modifier.height(32.dp))
                 Text(
                     "${currentState.titleTop}\n${currentState.titleBottom}",
@@ -236,11 +265,21 @@ fun AtmosphereWidgetApp(modifier: Modifier = Modifier, viewModel: ContextViewMod
                 val subBottomContext = when (currentState) {
                     WidgetState.GHOST -> "Context: Net Offline / Bat ${ctxState.battery}%"
                     WidgetState.FOCUS -> if (ctxState.isInternetCafe) "Context: Cafe (${ctxState.networkName})" else if (ctxState.ambientNoiseLevel > 0 && ctxState.ambientNoiseLevel <= 50.0) "Context: Quiet (${ctxState.ambientNoiseLevel.toInt()}dB)" else "Context: Class / Meeting"
-                    WidgetState.BEAST -> if (ctxState.detectedActivity == com.google.android.gms.location.DetectedActivity.RUNNING) "Context: Running" else if (ctxState.detectedActivity == com.google.android.gms.location.DetectedActivity.ON_BICYCLE) "Context: Cycling" else "Context: Gym / HP ${if(ctxState.isHeadphonesConnected) "ON" else "OFF"}"
+                    WidgetState.DEEP_FOCUS -> "Context: ${ctxState.ambientNoiseLevel.toInt()}dB + Meeting"
+                    WidgetState.BEAST -> if (ctxState.detectedActivity == 8 /* RUNNING */) "Context: Running" else if (ctxState.detectedActivity == 1 /* ON_BICYCLE */) "Context: Cycling" else "Context: Gym / HP ${if(ctxState.isHeadphonesConnected) "ON" else "OFF"}"
                     WidgetState.REWIND -> "Context: ${ctxState.address} @ ${ctxState.timeHour}H"
                     WidgetState.COZY -> "Context: Weather ${ctxState.weather}"
                     WidgetState.CROWD -> if (ctxState.sustainedLoudNoise) "Context: Loud (${ctxState.ambientNoiseLevel.toInt()}dB sustained)" else "Context: Party / Social"
-                    WidgetState.DISCOVERY -> "Context: Default Flow"
+                    WidgetState.BEDTIME -> "Context: Bedtime / BT Connected"
+                    WidgetState.DISCOVERY -> {
+                        when (ctxState.detectedActivity) {
+                            7, 2 -> "Context: Walking"
+                            0 -> "Context: Driving"
+                            1 -> "Context: Cycling"
+                            8 -> "Context: Running"
+                            else -> "Context: Default Flow"
+                        }
+                    }
                 }
                 Text(
                     subBottomContext.uppercase(),
@@ -268,17 +307,24 @@ fun AtmosphereWidgetApp(modifier: Modifier = Modifier, viewModel: ContextViewMod
                          })
                 }
 
+                val isLowBattery = ctxState.battery < 15
+                val accentColor = if (isLowBattery) Color(0xFF333333) else Color(0xFFD71921)
+                val iconTint = if (isLowBattery) Color.LightGray else Color.White
+
+                val borderModifier = if (isLowBattery) Modifier.border(1.dp, Color.White.copy(0.4f), CircleShape) else Modifier
+
                 Box(
                     modifier = Modifier
                         .size(80.dp)
-                        .shadow(16.dp, CircleShape, spotColor = Color(0xFFD71921))
-                        .background(Color(0xFFD71921), CircleShape)
+                        .shadow(if (isLowBattery) 0.dp else 16.dp, CircleShape, spotColor = accentColor)
+                        .background(accentColor, CircleShape)
+                        .then(borderModifier)
                         .clickable { 
                             launchMediaLink(context, currentState.link)
                          },
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = "Play", modifier = Modifier.size(40.dp), tint = Color.White)
+                    Icon(Icons.Filled.PlayArrow, contentDescription = "Play", modifier = Modifier.size(40.dp), tint = iconTint)
                 }
             }
 

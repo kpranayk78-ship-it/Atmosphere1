@@ -8,7 +8,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 
 @Composable
-fun PixelIcon(pixels16x16: List<String>, modifier: Modifier = Modifier) {
+fun PixelIcon(pixels16x16: List<String>, modifier: Modifier = Modifier, monochrome: Boolean = false) {
     Canvas(modifier = modifier) {
         val pixelSize = size.width / 16f
         pixels16x16.forEachIndexed { y, row ->
@@ -17,7 +17,7 @@ fun PixelIcon(pixels16x16: List<String>, modifier: Modifier = Modifier) {
                     '#' -> Color.White
                     '%' -> Color.White.copy(alpha = 0.6f)
                     '.' -> Color.White.copy(alpha = 0.3f)
-                    '@' -> Color(0xFFD71921) // Red alert
+                    '@' -> if (monochrome) Color.White.copy(alpha = 0.8f) else Color(0xFFD71921)
                     else -> Color.Transparent
                 }
                 if (color != Color.Transparent) {
