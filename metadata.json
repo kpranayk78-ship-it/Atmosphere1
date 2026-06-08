@@ -1,6 +1,6 @@
 {
   "name": "Atmosphere",
-  "description": "Context-aware 4x2 Widget",
+  "description": "Context-aware dynamic dashboard that monitors activity, weather, battery, and ambient noise to automatically adapt its UI state (Focus, Beast, Cozy, Bedtime, etc.) to your current environment and flow.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
