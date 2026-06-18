@@ -4,6 +4,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.Manifest
+import android.content.Context
+import android.os.Vibrator
+import android.os.VibrationEffect
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -16,11 +19,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
@@ -37,6 +43,8 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.NdDot
 import java.text.SimpleDateFormat
@@ -147,14 +155,97 @@ fun launchMediaLink(context: android.content.Context, link: String) {
     }
 }
 
+data class AppChoice(val name: String, val link: String)
+
+object AppDeepLinkMappings {
+    val ytLinks = mapOf(
+        WidgetState.FOCUS to "https://music.youtube.com/search?q=focus+playlist",
+        WidgetState.DEEP_FOCUS to "https://music.youtube.com/search?q=deep+focus+playlist",
+        WidgetState.BEAST to "https://music.youtube.com/search?q=beastmode+workout+playlist",
+        WidgetState.COZY to "https://music.youtube.com/search?q=cozy+lofi+playlist",
+        WidgetState.CROWD to "https://music.youtube.com/search?q=top+50+hits",
+        WidgetState.BEDTIME to "https://music.youtube.com/search?q=sleep+sounds+playlist",
+        WidgetState.DISCOVERY to "https://music.youtube.com/search?q=new+music+discovery"
+    )
+
+    val appleLinks = mapOf(
+        WidgetState.FOCUS to "https://music.apple.com/us/search?term=focus+playlist",
+        WidgetState.DEEP_FOCUS to "https://music.apple.com/us/search?term=deep+focus",
+        WidgetState.BEAST to "https://music.apple.com/us/search?term=workout",
+        WidgetState.COZY to "https://music.apple.com/us/search?term=lofi+chill",
+        WidgetState.CROWD to "https://music.apple.com/us/search?term=todays+hits",
+        WidgetState.BEDTIME to "https://music.apple.com/us/search?term=sleep+sounds",
+        WidgetState.DISCOVERY to "https://music.apple.com/us/search?term=new+music"
+    )
+
+    val scLinks = mapOf(
+        WidgetState.FOCUS to "https://soundcloud.com/search/sets?q=study+focus",
+        WidgetState.DEEP_FOCUS to "https://soundcloud.com/search/sets?q=deep+focus",
+        WidgetState.BEAST to "https://soundcloud.com/search/sets?q=workout",
+        WidgetState.COZY to "https://soundcloud.com/search/sets?q=lofi+chill",
+        WidgetState.CROWD to "https://soundcloud.com/search/sets?q=pop+party",
+        WidgetState.BEDTIME to "https://soundcloud.com/search/sets?q=sleep+sounds",
+        WidgetState.DISCOVERY to "https://soundcloud.com/search/sets?q=new+music"
+    )
+}
+
+fun getAppChoicesForState(state: WidgetState): List<AppChoice> {
+    val ytLink = AppDeepLinkMappings.ytLinks[state] ?: "https://music.youtube.com/"
+    val appleLink = AppDeepLinkMappings.appleLinks[state] ?: "https://music.apple.com/us/browse"
+    val scLink = AppDeepLinkMappings.scLinks[state] ?: "https://soundcloud.com/discover"
+
+    return when(state) {
+        WidgetState.REWIND -> listOf(
+            AppChoice("Netflix", "nflx://www.netflix.com/Browse?zb=1"),
+            AppChoice("Prime Video", "primevideo://"),
+            AppChoice("Disney+ Hotstar", "hotstar://"),
+            AppChoice("YouTube", "vnd.youtube://")
+        )
+        WidgetState.GHOST -> listOf(
+            AppChoice("Downloads", "content://downloads"),
+            AppChoice("Files", "content://")
+        )
+        else -> listOf(
+            AppChoice("Spotify", state.link),
+            AppChoice("YouTube Music", ytLink),
+            AppChoice("Apple Music", appleLink),
+            AppChoice("SoundCloud", scLink)
+        )
+    }
+}
+
 @Composable
 fun AtmosphereWidgetApp(modifier: Modifier = Modifier, viewModel: ContextViewModel = viewModel()) {
     val currentState by viewModel.currentState.collectAsState()
     val ctxState by viewModel.atmosphereContext.collectAsState()
 
     var isPrivacyOn by remember { mutableStateOf(false) }
+    var showAppChooserForState by remember { mutableStateOf<WidgetState?>(null) }
 
     val context = LocalContext.current
+    val vibrator = remember { context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator }
+
+    var isFirstLaunch by remember { mutableStateOf(true) }
+
+    LaunchedEffect(currentState) {
+        if (!isFirstLaunch) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val effect = when (currentState) {
+                    WidgetState.COZY -> VibrationEffect.createWaveform(longArrayOf(0, 30, 60, 30), -1)
+                    WidgetState.FOCUS -> VibrationEffect.createOneShot(15, 200)
+                    WidgetState.DEEP_FOCUS -> VibrationEffect.createOneShot(25, 255)
+                    WidgetState.BEAST -> VibrationEffect.createWaveform(longArrayOf(0, 20, 50, 40, 50, 60), -1)
+                    WidgetState.REWIND -> VibrationEffect.createWaveform(longArrayOf(0, 40, 100, 20), -1)
+                    WidgetState.GHOST -> VibrationEffect.createOneShot(10, 50)
+                    else -> VibrationEffect.createOneShot(20, VibrationEffect.DEFAULT_AMPLITUDE)
+                }
+                vibrator.vibrate(effect)
+            } else {
+                vibrator.vibrate(30)
+            }
+        }
+        isFirstLaunch = false
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -166,7 +257,10 @@ fun AtmosphereWidgetApp(modifier: Modifier = Modifier, viewModel: ContextViewMod
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.setAppForeground(true)
                 viewModel.onAppReopened()
+            } else if (event == Lifecycle.Event.ON_PAUSE) {
+                viewModel.setAppForeground(false)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -219,7 +313,14 @@ fun AtmosphereWidgetApp(modifier: Modifier = Modifier, viewModel: ContextViewMod
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Switch(
                         checked = isPrivacyOn, 
-                        onCheckedChange = { isPrivacyOn = it }, 
+                        onCheckedChange = { 
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                vibrator.vibrate(VibrationEffect.createOneShot(15, 100))
+                            } else {
+                                vibrator.vibrate(15)
+                            }
+                            isPrivacyOn = it 
+                        }, 
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White, 
                             checkedTrackColor = Color.White.copy(0.4f), 
@@ -295,7 +396,14 @@ fun AtmosphereWidgetApp(modifier: Modifier = Modifier, viewModel: ContextViewMod
             // Footer Interactive
             Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
                 Column(modifier = Modifier
-                    .clickable { viewModel.overrideState() }
+                    .clickable {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            vibrator.vibrate(VibrationEffect.createOneShot(25, 100))
+                        } else {
+                            vibrator.vibrate(25)
+                        }
+                        viewModel.overrideState() 
+                    }
                     .padding(8.dp)) {
                     Text("MANUAL OVERRIDE", color = Color.White.copy(0.4f), fontSize = 10.sp, letterSpacing = 2.sp)
                     Spacer(Modifier.height(4.dp))
@@ -313,15 +421,39 @@ fun AtmosphereWidgetApp(modifier: Modifier = Modifier, viewModel: ContextViewMod
 
                 val borderModifier = if (isLowBattery) Modifier.border(1.dp, Color.White.copy(0.4f), CircleShape) else Modifier
 
+                val actionModifier = Modifier.pointerInput(currentState) {
+                    detectTapGestures(
+                        onTap = {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                vibrator.vibrate(VibrationEffect.createOneShot(30, 200))
+                            } else {
+                                vibrator.vibrate(30)
+                            }
+                            val savedApp = viewModel.getSavedAppForState(currentState)
+                            if (savedApp == null) {
+                                showAppChooserForState = currentState
+                            } else {
+                                launchMediaLink(context, savedApp)
+                            }
+                        },
+                        onLongPress = {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                vibrator.vibrate(VibrationEffect.createOneShot(40, 255))
+                            } else {
+                                vibrator.vibrate(40)
+                            }
+                            showAppChooserForState = currentState
+                        }
+                    )
+                }
+
                 Box(
                     modifier = Modifier
                         .size(80.dp)
                         .shadow(if (isLowBattery) 0.dp else 16.dp, CircleShape, spotColor = accentColor)
                         .background(accentColor, CircleShape)
                         .then(borderModifier)
-                        .clickable { 
-                            launchMediaLink(context, currentState.link)
-                         },
+                        .then(actionModifier),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(Icons.Filled.PlayArrow, contentDescription = "Play", modifier = Modifier.size(40.dp), tint = iconTint)
@@ -338,6 +470,114 @@ fun AtmosphereWidgetApp(modifier: Modifier = Modifier, viewModel: ContextViewMod
                 Text("NET: ${ctxState.networkName}", color = Color.White.copy(0.3f), fontSize = 9.sp, letterSpacing = 2.sp)
                 val timeStr = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
                 Text(timeStr, color = Color.White.copy(0.3f), fontSize = 9.sp, letterSpacing = 2.sp)
+            }
+        }
+
+        androidx.compose.animation.AnimatedVisibility(
+            visible = showAppChooserForState != null,
+            enter = androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.fadeOut(),
+            modifier = Modifier.matchParentSize()
+        ) {
+            val state = showAppChooserForState ?: currentState
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.9f))
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null
+                    ) { showAppChooserForState = null } // Dismiss on background tap
+            ) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .fillMaxWidth()
+                        .padding(32.dp)
+                        .border(1.dp, Color.White.copy(0.3f))
+                        .background(Color.Black)
+                        .padding(24.dp)
+                        .clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null
+                        ) {},
+                ) {
+                    Text(
+                        text = "SELECT_SOURCE",
+                        color = Color.White.copy(0.4f),
+                        fontSize = 10.sp,
+                        letterSpacing = 2.sp,
+                        fontFamily = NdDot
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "${state.titleTop}_${state.titleBottom}".uppercase(),
+                        fontFamily = NdDot,
+                        fontSize = 24.sp,
+                        color = Color.White,
+                        letterSpacing = 2.sp
+                    )
+                    Spacer(modifier = Modifier.height(32.dp))
+
+                    val choices = getAppChoicesForState(state)
+                    
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        choices.forEachIndexed { index, app ->
+                            val savedApp = viewModel.getSavedAppForState(state)
+                            val isSelected = savedApp == app.link || (savedApp == null && index == 0)
+                            
+                            val textColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.4f)
+                            val prefix = if (isSelected) ">" else " "
+                            
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                            vibrator.vibrate(VibrationEffect.createOneShot(20, 150))
+                                        } else {
+                                            vibrator.vibrate(20)
+                                        }
+                                        viewModel.saveAppForState(state, app.link)
+                                        showAppChooserForState = null
+                                        launchMediaLink(context, app.link)
+                                    }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "$prefix ${app.name.uppercase()}",
+                                    color = textColor,
+                                    fontSize = 18.sp,
+                                    fontFamily = NdDot,
+                                    letterSpacing = 2.sp
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(32.dp))
+                    Text(
+                        text = "[CANCEL]",
+                        color = Color.White.copy(0.4f),
+                        fontSize = 14.sp,
+                        fontFamily = NdDot,
+                        letterSpacing = 2.sp,
+                        modifier = Modifier
+                            .clickable {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                    vibrator.vibrate(VibrationEffect.createOneShot(10, 50))
+                                } else {
+                                    vibrator.vibrate(10)
+                                }
+                                showAppChooserForState = null 
+                            }
+                            .padding(vertical = 8.dp),
+                        textAlign = TextAlign.Start
+                    )
+                }
             }
         }
     }

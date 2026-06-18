@@ -81,6 +81,12 @@ class ContextViewModel(application: Application) : AndroidViewModel(application)
     private var currentActivityType = 4 // 4 is UNKNOWN
 
     private val syncMutex = kotlinx.coroutines.sync.Mutex()
+    
+    private var isAppInForeground = false
+
+    fun setAppForeground(isForeground: Boolean) {
+        isAppInForeground = isForeground
+    }
 
     private var sensorManager: android.hardware.SensorManager? = null
     private var stepDetector: android.hardware.Sensor? = null
@@ -262,9 +268,24 @@ class ContextViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private var isAudioDisabled = false
+
     @SuppressLint("MissingPermission")
     private suspend fun getAmbientNoiseLevel(): Double {
+        if (!isAppInForeground || isAudioDisabled) {
+            return 0.0
+        }
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            return 0.0
+        }
+        val appOps = ctx.getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+        val mode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            appOps.unsafeCheckOpNoThrow(android.app.AppOpsManager.OPSTR_RECORD_AUDIO, android.os.Process.myUid(), ctx.packageName)
+        } else {
+            @Suppress("DEPRECATION")
+            appOps.checkOpNoThrow(android.app.AppOpsManager.OPSTR_RECORD_AUDIO, android.os.Process.myUid(), ctx.packageName)
+        }
+        if (mode != android.app.AppOpsManager.MODE_ALLOWED) {
             return 0.0
         }
         return try {
@@ -283,12 +304,17 @@ class ContextViewModel(application: Application) : AndroidViewModel(application)
 
             if (audioRecord.state != android.media.AudioRecord.STATE_INITIALIZED) {
                 audioRecord.release()
+                isAudioDisabled = true
                 return 0.0
             }
 
             var maxAmplitude = 0
             try {
                 audioRecord.startRecording()
+                if (audioRecord.recordingState != android.media.AudioRecord.RECORDSTATE_RECORDING) {
+                    isAudioDisabled = true
+                    return 0.0
+                }
                 val buffer = ShortArray(minBufSize)
                 
                 val endTime = System.currentTimeMillis() + 1000 // 1 second
@@ -317,6 +343,7 @@ class ContextViewModel(application: Application) : AndroidViewModel(application)
                 0.0
             }
         } catch (e: Throwable) {
+            isAudioDisabled = true
             0.0
         }
     }
@@ -457,6 +484,16 @@ class ContextViewModel(application: Application) : AndroidViewModel(application)
         } finally {
             connection?.disconnect()
         }
+    }
+
+    private val prefs = ctx.getSharedPreferences("AtmospherePrefs", Context.MODE_PRIVATE)
+
+    fun getSavedAppForState(state: WidgetState): String? {
+        return prefs.getString("app_${state.name}", null)
+    }
+
+    fun saveAppForState(state: WidgetState, link: String) {
+        prefs.edit().putString("app_${state.name}", link).apply()
     }
 
     override fun onCleared() {
